@@ -1,3 +1,4 @@
+import os
 import time
 import requests
 import threading
@@ -7,50 +8,90 @@ from flask_cors import CORS
 app = Flask(__name__)
 CORS(app)
 
-def get_current_price(pair):
-      # pair is like "EUR/USD"
-      base, target = pair.split('/')
-      url = f"https://api.exchangerate-api.com/v4/latest/{base}"
-      try:
-                response = requests.get(url)
-                data = response.json()
-                return data['rates'].get(target)
-except Exception as e:
+configs = {}
+
+def get_price(pair):
+    try:
+        # Convert EUR/USD to EURUSD=X for Yahoo Finance
+        symbol = pair.replace('/', '').replace('-', '').upper() + '=X'
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        response = requests.get(url, headers=headers)
+        if response.status_code == 200:
+            data = response.json()
+            return data['chart']['result'][0]['meta']['regularMarketPrice']
+    except Exception as e:
         print(f"Error fetching price: {e}")
-        return None
+    return None
 
-def telegram_alert(token, chat_id, message):
-      url = f"https://api.telegram.org/bot{token}/sendMessage"
-      payload = {"chat_id": chat_id, "text": message}
-      requests.post(url, json=payload)
+def send_telegram_alert(bot_token, chat_id, pair, price, zone_min, zone_max):
+    text = f"🚨 *ZONE ALERT*\nPair: {pair}\nCurrent Price: {price}\nZone: {zone_min} - {zone_max}\n\nPrice has *ENTERED* your area of interest."
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "Markdown"
+    }
+    try:
+        requests.post(url, json=payload)
+    except Exception as e:
+        print(f"Failed to send telegram message: {e}")
 
-def monitor_price(config):
-      pair = config['pair']
-      zone_min = float(config['zoneMin'])
-      zone_max = float(config['zoneMax'])
-      token = config['telegramBotToken']
-      chat_id = config['telegramChatId']
-
+def monitor_price(pair):
+    config = configs.get(pair)
+    if not config:
+        return
+    
     print(f"[{pair}] Started background monitoring loop...")
-
+    
+    # Recursive / While loop logic
     while True:
-              price = get_current_price(pair)
-              if price is not None:
-                            print(f"[{pair}] Current Price: {price}")
-                            if zone_min <= price <= zone_max:
-                                              message = f"Alert! {pair} price {price} entered zone ({zone_min}-{zone_max})."
-                                              telegram_alert(token, chat_id, message)
-                                              break
-                                      time.sleep(60)
+        if pair not in configs:
+            print(f"[{pair}] Stopped monitoring.")
+            break
+            
+        config = configs[pair]
+        current_price = get_price(pair)
+        
+        if current_price is not None:
+            print(f"[{pair}] Current Price: {current_price}")
+            
+            # Check if price entered the zone
+            if config['zoneMin'] <= current_price <= config['zoneMax']:
+                print(f"[{pair}] 🚨 Price entered zone! Triggering Telegram Alert & Exiting Loop.")
+                send_telegram_alert(
+                    config['telegramBotToken'], 
+                    config['telegramChatId'], 
+                    pair, 
+                    current_price, 
+                    config['zoneMin'], 
+                    config['zoneMax']
+                )
+                
+                # As requested: exit the loop once it reaches the target
+                del configs[pair]
+                break
+        
+        # Sleep for 1 minute before checking again
+        time.sleep(60)
 
-      @app.route('/api/save-config', methods=['POST'])
+@app.route('/api/save-config', methods=['POST'])
 def save_config():
-      data = request.json
-      thread = threading.Thread(target=monitor_price, args=(data,))
-      thread.daemon = True
-      thread.start()
-      return jsonify({"status": "success", "message": "Monitoring started."})
+    data = request.json
+    pair = data.get('pair')
+    
+    if not pair:
+        return jsonify({"error": "Missing pair"}), 400
+        
+    configs[pair] = data
+    
+    # Start a background thread (acts as our recursive loop without freezing the server)
+    thread = threading.Thread(target=monitor_price, args=(pair,))
+    thread.daemon = True
+    thread.start()
+        
+    return jsonify({"message": "Configuration saved and monitoring loop started."})
 
 if __name__ == '__main__':
-      app.run(host='0.0.0.0', port=5000)
-  
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
