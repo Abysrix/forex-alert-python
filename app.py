@@ -12,16 +12,28 @@ configs = {}
 
 def get_price(pair):
     try:
-        # Convert EUR/USD to EURUSD=X for Yahoo Finance
-        symbol = pair.replace('/', '').replace('-', '').upper() + '=X'
+        pair_upper = pair.upper()
+        
+        # Special mappings for Yahoo Finance
+        if pair_upper in ['XAU/USD', 'XAUUSD', 'GOLD']:
+            symbol = 'GC=F'
+        elif pair_upper in ['BTC/USD', 'BTCUSD']:
+            symbol = 'BTC-USD'
+        else:
+            symbol = pair_upper.replace('/', '').replace('-', '') + '=X'
+            
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
         headers = {'User-Agent': 'Mozilla/5.0'}
         response = requests.get(url, headers=headers)
+        
         if response.status_code == 200:
             data = response.json()
-            return data['chart']['result'][0]['meta']['regularMarketPrice']
+            if data['chart']['result'] is not None:
+                return data['chart']['result'][0]['meta']['regularMarketPrice']
+            else:
+                print(f"[{pair}] Yahoo Finance Error: Ticker not found.")
     except Exception as e:
-        print(f"Error fetching price: {e}")
+        print(f"[{pair}] Error fetching price: {e}")
     return None
 
 def send_telegram_alert(bot_token, chat_id, pair, price, zone_min, zone_max):
