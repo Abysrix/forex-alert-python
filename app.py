@@ -96,7 +96,7 @@ def monitor_price(pair):
                 break
         
         # Sleep for 1 minute before checking again
-        time.sleep(60)
+        time.sleep(5)
 
 @app.route('/api/save-config', methods=['POST'])
 def save_config():
