@@ -4,6 +4,7 @@ import requests
 import threading
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+from tradingview_ta import TA_Handler, Interval
 
 app = Flask(__name__)
 CORS(app)
@@ -13,27 +14,37 @@ configs = {}
 def get_price(pair):
     try:
         pair_upper = pair.upper()
+        symbol = pair_upper.replace('/', '').replace('-', '')
+        exchange = 'OANDA'
+        screener = 'forex'
         
-        # Special mappings for Yahoo Finance
-        if pair_upper in ['XAU/USD', 'XAUUSD', 'GOLD']:
-            symbol = 'GC=F'
-        elif pair_upper in ['BTC/USD', 'BTCUSD']:
-            symbol = 'BTC-USD'
-        else:
-            symbol = pair_upper.replace('/', '').replace('-', '') + '=X'
+        # Crypto handling
+        if 'BTC' in symbol or 'ETH' in symbol:
+            screener = 'crypto'
+            exchange = 'BINANCE'
+            # Convert BTC/USD to BTCUSDT for Binance if needed, but Binance supports BTCUSD for perps
+            # Actually, the test above showed BTCUSD works on Binance!
             
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        response = requests.get(url, headers=headers)
+        # Gold/CFD handling
+        elif 'XAU' in symbol or 'GOLD' in symbol:
+            screener = 'cfd'
+            exchange = 'OANDA'
+            symbol = 'XAUUSD'
+
+        handler = TA_Handler(
+            symbol=symbol,
+            screener=screener,
+            exchange=exchange,
+            interval=Interval.INTERVAL_1_MINUTE
+        )
         
-        if response.status_code == 200:
-            data = response.json()
-            if data['chart']['result'] is not None:
-                return data['chart']['result'][0]['meta']['regularMarketPrice']
-            else:
-                print(f"[{pair}] Yahoo Finance Error: Ticker not found.")
+        analysis = handler.get_analysis()
+        if analysis and analysis.indicators and 'close' in analysis.indicators:
+            return float(analysis.indicators['close'])
+            
     except Exception as e:
-        print(f"[{pair}] Error fetching price: {e}")
+        print(f"[{pair}] Error fetching price from TradingView: {e}")
+        
     return None
 
 def send_telegram_alert(bot_token, chat_id, pair, price, zone_min, zone_max):
