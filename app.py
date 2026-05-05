@@ -95,8 +95,10 @@ def monitor_price(pair):
                 del configs[pair]
                 break
         
-        # Sleep for 1 minute before checking again
-        time.sleep(5)
+        # Sleep for 20 seconds before checking again
+        time.sleep(20)
+
+active_threads = {}
 
 @app.route('/api/save-config', methods=['POST'])
 def save_config():
@@ -108,12 +110,15 @@ def save_config():
         
     configs[pair] = data
     
-    # Start a background thread (acts as our recursive loop without freezing the server)
-    thread = threading.Thread(target=monitor_price, args=(pair,))
-    thread.daemon = True
-    thread.start()
+    # Only start a new thread if one isn't already running for this pair
+    if pair not in active_threads or not active_threads[pair].is_alive():
+        thread = threading.Thread(target=monitor_price, args=(pair,))
+        thread.daemon = True
+        thread.start()
+        active_threads[pair] = thread
+        return jsonify({"message": "Configuration saved and NEW monitoring loop started."})
         
-    return jsonify({"message": "Configuration saved and monitoring loop started."})
+    return jsonify({"message": "Configuration updated for running loop."})
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
