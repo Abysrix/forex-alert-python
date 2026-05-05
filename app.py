@@ -96,7 +96,7 @@ def monitor_price(pair):
                 break
         
         # Sleep for 20 seconds before checking again
-        time.sleep(20)
+        time.sleep(30)
 
 active_threads = {}
 
