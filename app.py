@@ -18,24 +18,36 @@ GMAIL_PASS = os.environ.get("GMAIL_PASS")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")  
 # -----------------------------
 
-# Global variable to store the Chat ID from the extension
-active_chat_id = None
+import json
+
+DB_FILE = "chat_id_db.json"
+
+def load_chat_ids():
+    try:
+        with open(DB_FILE, 'r') as f:
+            return set(json.load(f))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return set()
+
+def save_chat_id_to_db(chat_id):
+    chat_ids = load_chat_ids()
+    chat_ids.add(chat_id)
+    with open(DB_FILE, 'w') as f:
+        json.dump(list(chat_ids), f)
 
 @app.route('/api/save-chat-id', methods=['POST'])
 def save_chat_id():
-    global active_chat_id
     data = request.json
     chat_id = data.get('telegramChatId')
     
     if not chat_id:
         return jsonify({"error": "Missing Chat ID"}), 400
         
-    active_chat_id = chat_id
-    return jsonify({"message": "Chat ID securely saved to server!"})
+    save_chat_id_to_db(str(chat_id))
+    return jsonify({"message": "Chat ID successfully registered in the database!"})
 
 def send_telegram_alert(bot_token, chat_id, subject, body):
     if not chat_id:
-        print("Alert skipped: No Chat ID provided by Extension yet.")
         return
         
     text = f"🚨 *TRADINGVIEW ALERT*\n*{subject}*\n\n{body}"
@@ -87,27 +99,29 @@ def monitor_email():
                             print(f"[IMAP] 🚨 New Alert Received: {subject}")
                             
                             # --- SMART ROUTING SYSTEM ---
-                            # Parse the body to see if the user put their Chat ID in the TradingView message
-                            # Example message: "Alert : 1438010651 \n XAUUSD Crossing 4,687.299"
-                            chat_id_to_use = active_chat_id
+                            chat_id_to_use = None
                             clean_body = body.strip()
+                            clean_subject = subject
                             
-                            lines = clean_body.split('\n')
-                            if lines:
-                                first_line = lines[0].strip()
-                                # Check if first line contains "Alert : 12345" or is just "12345"
-                                import re
-                                match = re.search(r'(?i)(?:Alert\s*:\s*)?(-?\d{7,15})', first_line)
-                                if match:
-                                    chat_id_to_use = match.group(1)
-                                    # Remove the ID line from the final message
-                                    clean_body = '\n'.join(lines[1:]).strip()
+                            import re
+                            
+                            # 1. Check if Chat ID is hidden in the Email Subject
+                            # Example: "Alert: 1438010651"
+                            match_sub = re.search(r'(?i)(?:Alert\s*:\s*)?(-?\d{7,15})', subject)
+                            if match_sub:
+                                chat_id_to_use = match_sub.group(1)
+                                clean_subject = "TradingView Alert" # Hide the ID from the final Telegram message
+
+                            # 2. Database Authorization Check
+                            authorized_ids = load_chat_ids()
 
                             if not chat_id_to_use:
-                                print("[IMAP] Ignored: No Telegram Chat ID found in email or server.")
+                                print("[IMAP] Ignored: No Telegram Chat ID found in Subject.")
+                            elif chat_id_to_use not in authorized_ids:
+                                print(f"[IMAP] Ignored: Unregistered Chat ID ({chat_id_to_use}). User must save it in the Extension first.")
                             else:
                                 # Forward the cleaned message to Telegram
-                                send_telegram_alert(TELEGRAM_BOT_TOKEN, chat_id_to_use, subject, clean_body)
+                                send_telegram_alert(TELEGRAM_BOT_TOKEN, chat_id_to_use, clean_subject, clean_body)
                                 
                             # Mark email as Read
                             mail.store(num, '+FLAGS', '\\Seen')
