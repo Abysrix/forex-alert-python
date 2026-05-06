@@ -55,7 +55,7 @@ def send_telegram_alert(bot_token, chat_id, subject, body):
         print("[ALERT] Skipped: Missing bot token or chat ID.")
         return
 
-    text = f"*{subject}*\n{body}"
+    text = f"🚨 TradingView Alert 🚨\n{body}"
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     payload = {
         "chat_id": chat_id,
@@ -112,7 +112,7 @@ def monitor_email():
                             # --- SMART ROUTING SYSTEM ---
                             chat_id_to_use = None
                             clean_body = body.strip()
-                            clean_subject = "🚨 TradingView Alert 🚨"
+                            clean_subject = "TradingView Alert"
 
                             # Check if Chat ID is in the Email Subject
                             # Example: "Alert: 1438010651"
