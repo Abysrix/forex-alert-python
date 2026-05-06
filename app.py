@@ -1,9 +1,12 @@
 import os
+import re
 import time
+import json
 import email
 import imaplib
 import threading
 import requests
+from datetime import datetime, timezone
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 
@@ -11,6 +14,9 @@ app = Flask(__name__)
 CORS(app)
 
 imap_thread_active = False
+SERVER_START_TIME = datetime.now(timezone.utc)
+alerts_sent = 0
+alerts_ignored = 0
 
 # --- ENVIRONMENT VARIABLES ---
 GMAIL_USER = os.environ.get("GMAIL_USER")
@@ -117,11 +123,14 @@ def monitor_email():
 
                             if not chat_id_to_use:
                                 print("[IMAP] Ignored: No Telegram Chat ID found in Subject.")
+                                alerts_ignored += 1
                             elif chat_id_to_use not in authorized_ids:
                                 print(f"[IMAP] Ignored: Unregistered Chat ID ({chat_id_to_use}). User must save it in the Extension first.")
+                                alerts_ignored += 1
                             else:
                                 # Forward the cleaned message to Telegram
                                 send_telegram_alert(TELEGRAM_BOT_TOKEN, chat_id_to_use, clean_subject, clean_body)
+                                alerts_sent += 1
                                 
                             # Mark email as Read
                             mail.store(num, '+FLAGS', '\\Seen')
@@ -132,6 +141,25 @@ def monitor_email():
         except Exception as e:
             print(f"[IMAP] Connection lost or Error: {e}. Reconnecting in 10 seconds...")
             time.sleep(10)
+
+@app.route('/ping')
+def ping():
+    uptime_seconds = int((datetime.now(timezone.utc) - SERVER_START_TIME).total_seconds())
+    hours, remainder = divmod(uptime_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    uptime_str = f"{hours}h {minutes}m {seconds}s"
+
+    authorized_ids = load_chat_ids()
+
+    return jsonify({
+        "status": "🟢 Online",
+        "uptime": uptime_str,
+        "imap_listener": "Active" if imap_thread_active else "Inactive",
+        "registered_users": len(authorized_ids),
+        "alerts_sent": alerts_sent,
+        "alerts_ignored": alerts_ignored,
+        "server_time_utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    })
 
 @app.route('/')
 def health_check():
