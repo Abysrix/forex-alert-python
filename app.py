@@ -24,7 +24,6 @@ GMAIL_PASS = os.environ.get("GMAIL_PASS")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")  
 # -----------------------------
 
-import json
 
 DB_FILE = "chat_id_db.json"
 
@@ -166,10 +165,12 @@ def health_check():
     return "IMAP Listener is running securely in the background!", 200
 
 if __name__ == '__main__':
+    global imap_thread_active
     # Start the IMAP listener in the background immediately
     thread = threading.Thread(target=monitor_email)
     thread.daemon = True
     thread.start()
+    imap_thread_active = True
     
     # Run the dummy web server so Render doesn't crash from port timeout
     port = int(os.environ.get('PORT', 5000))
