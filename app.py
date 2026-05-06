@@ -1,54 +1,44 @@
 import os
 import time
-import requests
+import email
+import imaplib
 import threading
+import requests
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from tradingview_ta import TA_Handler, Interval
 
 app = Flask(__name__)
 CORS(app)
 
-configs = {}
+imap_thread_active = False
 
-def get_price(pair):
-    try:
-        pair_upper = pair.upper()
-        symbol = pair_upper.replace('/', '').replace('-', '')
-        exchange = 'OANDA'
-        screener = 'forex'
-        
-        # Crypto handling
-        if 'BTC' in symbol or 'ETH' in symbol:
-            screener = 'crypto'
-            exchange = 'BINANCE'
-            # Convert BTC/USD to BTCUSDT for Binance if needed, but Binance supports BTCUSD for perps
-            # Actually, the test above showed BTCUSD works on Binance!
-            
-        # Gold/CFD handling
-        elif 'XAU' in symbol or 'GOLD' in symbol:
-            screener = 'cfd'
-            exchange = 'OANDA'
-            symbol = 'XAUUSD'
+# --- ENVIRONMENT VARIABLES ---
+GMAIL_USER = os.environ.get("GMAIL_USER")
+GMAIL_PASS = os.environ.get("GMAIL_PASS")  
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")  
+# -----------------------------
 
-        handler = TA_Handler(
-            symbol=symbol,
-            screener=screener,
-            exchange=exchange,
-            interval=Interval.INTERVAL_1_MINUTE
-        )
-        
-        analysis = handler.get_analysis()
-        if analysis and analysis.indicators and 'close' in analysis.indicators:
-            return float(analysis.indicators['close'])
-            
-    except Exception as e:
-        print(f"[{pair}] Error fetching price from TradingView: {e}")
-        
-    return None
+# Global variable to store the Chat ID from the extension
+active_chat_id = None
 
-def send_telegram_alert(bot_token, chat_id, pair, price, zone_min, zone_max):
-    text = f"🚨 *ZONE ALERT*\nPair: {pair}\nCurrent Price: {price}\nZone: {zone_min} - {zone_max}\n\nPrice has *ENTERED* your area of interest."
+@app.route('/api/save-chat-id', methods=['POST'])
+def save_chat_id():
+    global active_chat_id
+    data = request.json
+    chat_id = data.get('telegramChatId')
+    
+    if not chat_id:
+        return jsonify({"error": "Missing Chat ID"}), 400
+        
+    active_chat_id = chat_id
+    return jsonify({"message": "Chat ID securely saved to server!"})
+
+def send_telegram_alert(bot_token, chat_id, subject, body):
+    if not chat_id:
+        print("Alert skipped: No Chat ID provided by Extension yet.")
+        return
+        
+    text = f"🚨 *TRADINGVIEW ALERT*\n*{subject}*\n\n{body}"
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     payload = {
         "chat_id": chat_id,
@@ -60,66 +50,65 @@ def send_telegram_alert(bot_token, chat_id, pair, price, zone_min, zone_max):
     except Exception as e:
         print(f"Failed to send telegram message: {e}")
 
-def monitor_price(pair):
-    config = configs.get(pair)
-    if not config:
-        return
+def monitor_email():
+    print(f"[IMAP] Started Gmail IMAP Listener for {GMAIL_USER}...")
     
-    print(f"[{pair}] Started background monitoring loop...")
-    
-    # Recursive / While loop logic
     while True:
-        if pair not in configs:
-            print(f"[{pair}] Stopped monitoring.")
-            break
+        try:
+            # Connect to Gmail IMAP securely
+            mail = imaplib.IMAP4_SSL('imap.gmail.com')
+            mail.login(GMAIL_USER, GMAIL_PASS)
             
-        config = configs[pair]
-        current_price = get_price(pair)
-        
-        if current_price is not None:
-            print(f"[{pair}] Current Price: {current_price}")
-            
-            # Check if price entered the zone
-            if config['zoneMin'] <= current_price <= config['zoneMax']:
-                print(f"[{pair}] 🚨 Price entered zone! Triggering Telegram Alert & Exiting Loop.")
-                send_telegram_alert(
-                    config['telegramBotToken'], 
-                    config['telegramChatId'], 
-                    pair, 
-                    current_price, 
-                    config['zoneMin'], 
-                    config['zoneMax']
-                )
+            while True:
+                # Refresh the mailbox state to detect new emails
+                mail.select('inbox')
                 
-                # As requested: exit the loop once it reaches the target
-                del configs[pair]
-                break
-        
-        # Sleep for 20 seconds before checking again
-        time.sleep(35)
+                # Quickly search for unread emails
+                status, response = mail.search(None, 'UNSEEN')
+                unread_msg_nums = response[0].split()
+                
+                for num in unread_msg_nums:
+                    status, data = mail.fetch(num, '(RFC822)')
+                    for response_part in data:
+                        if isinstance(response_part, tuple):
+                            msg = email.message_from_bytes(response_part[1])
+                            subject = msg['subject']
+                            
+                            # Extract email body
+                            body = ""
+                            if msg.is_multipart():
+                                for part in msg.walk():
+                                    if part.get_content_type() == "text/plain":
+                                        body = part.get_payload(decode=True).decode()
+                                        break
+                            else:
+                                body = msg.get_payload(decode=True).decode()
+                                
+                            print(f"[IMAP] 🚨 New Alert Received: {subject}")
+                            
+                            # Forward exactly what TradingView sent to Telegram
+                            send_telegram_alert(TELEGRAM_BOT_TOKEN, active_chat_id, subject, body)
+                            
+                            # Mark email as Read
+                            mail.store(num, '+FLAGS', '\\Seen')
+                
+                # Check inbox every 3 seconds
+                time.sleep(3)
+                
+        except Exception as e:
+            print(f"[IMAP] Connection lost or Error: {e}. Reconnecting in 10 seconds...")
+            time.sleep(10)
 
-active_threads = {}
-
-@app.route('/api/save-config', methods=['POST'])
-def save_config():
-    data = request.json
-    pair = data.get('pair')
-    
-    if not pair:
-        return jsonify({"error": "Missing pair"}), 400
-        
-    configs[pair] = data
-    
-    # Only start a new thread if one isn't already running for this pair
-    if pair not in active_threads or not active_threads[pair].is_alive():
-        thread = threading.Thread(target=monitor_price, args=(pair,))
-        thread.daemon = True
-        thread.start()
-        active_threads[pair] = thread
-        return jsonify({"message": "Configuration saved and NEW monitoring loop started."})
-        
-    return jsonify({"message": "Configuration updated for running loop."})
+@app.route('/')
+def health_check():
+    return "IMAP Listener is running securely in the background!", 200
 
 if __name__ == '__main__':
+    # Start the IMAP listener in the background immediately
+    thread = threading.Thread(target=monitor_email)
+    thread.daemon = True
+    thread.start()
+    
+    # Run the dummy web server so Render doesn't crash from port timeout
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
