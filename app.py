@@ -86,9 +86,29 @@ def monitor_email():
                                 
                             print(f"[IMAP] 🚨 New Alert Received: {subject}")
                             
-                            # Forward exactly what TradingView sent to Telegram
-                            send_telegram_alert(TELEGRAM_BOT_TOKEN, active_chat_id, subject, body)
+                            # --- SMART ROUTING SYSTEM ---
+                            # Parse the body to see if the user put their Chat ID in the TradingView message
+                            # Example message: "Alert : 1438010651 \n XAUUSD Crossing 4,687.299"
+                            chat_id_to_use = active_chat_id
+                            clean_body = body.strip()
                             
+                            lines = clean_body.split('\n')
+                            if lines:
+                                first_line = lines[0].strip()
+                                # Check if first line contains "Alert : 12345" or is just "12345"
+                                import re
+                                match = re.search(r'(?i)(?:Alert\s*:\s*)?(-?\d{7,15})', first_line)
+                                if match:
+                                    chat_id_to_use = match.group(1)
+                                    # Remove the ID line from the final message
+                                    clean_body = '\n'.join(lines[1:]).strip()
+
+                            if not chat_id_to_use:
+                                print("[IMAP] Ignored: No Telegram Chat ID found in email or server.")
+                            else:
+                                # Forward the cleaned message to Telegram
+                                send_telegram_alert(TELEGRAM_BOT_TOKEN, chat_id_to_use, subject, clean_body)
+                                
                             # Mark email as Read
                             mail.store(num, '+FLAGS', '\\Seen')
                 
