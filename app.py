@@ -17,6 +17,7 @@ imap_thread_active = False
 SERVER_START_TIME = datetime.now(timezone.utc)
 alerts_sent = 0
 alerts_ignored = 0
+last_alert_time = None
 
 # --- ENVIRONMENT VARIABLES ---
 GMAIL_USER = os.environ.get("GMAIL_USER")
@@ -69,8 +70,8 @@ def send_telegram_alert(bot_token, chat_id, subject, body):
         print(f"[TELEGRAM] Failed to send message: {e}")
 
 def monitor_email():
-    # FIX: Declare globals at the top of the function so counters & flag can be updated
-    global imap_thread_active, alerts_sent, alerts_ignored
+    # Declare globals so counters & flag can be updated
+    global imap_thread_active, alerts_sent, alerts_ignored, last_alert_time
 
     imap_thread_active = True
     print(f"[IMAP] Started Gmail IMAP Listener for {GMAIL_USER}...")
@@ -132,6 +133,7 @@ def monitor_email():
                             else:
                                 send_telegram_alert(TELEGRAM_BOT_TOKEN, chat_id_to_use, clean_subject, clean_body)
                                 alerts_sent += 1
+                                last_alert_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
                             # Mark email as Read
                             mail.store(num, '+FLAGS', '\\Seen')
@@ -144,6 +146,34 @@ def monitor_email():
             imap_thread_active = False
             time.sleep(10)
             imap_thread_active = True
+
+@app.route('/api/remove-chat-id', methods=['POST'])
+def remove_chat_id():
+    data = request.json
+    chat_id = data.get('telegramChatId')
+    if not chat_id:
+        return jsonify({"error": "Missing Chat ID"}), 400
+    chat_ids = load_chat_ids()
+    chat_ids.discard(str(chat_id))
+    with open(DB_FILE, 'w') as f:
+        json.dump(list(chat_ids), f)
+    return jsonify({"message": "Chat ID removed from database."})
+
+@app.route('/api/stats')
+def stats():
+    uptime_seconds = int((datetime.now(timezone.utc) - SERVER_START_TIME).total_seconds())
+    hours, remainder = divmod(uptime_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    authorized_ids = load_chat_ids()
+    return jsonify({
+        "status": "online",
+        "uptime": f"{hours}h {minutes}m {seconds}s",
+        "imap_listener": imap_thread_active,
+        "registered_users": len(authorized_ids),
+        "alerts_sent": alerts_sent,
+        "alerts_ignored": alerts_ignored,
+        "last_alert_time": last_alert_time or "No alerts yet"
+    })
 
 @app.route('/ping')
 def ping():
